@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0d13">
+<title>Гитарный круг — теория, ритм и слух на грифе</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%2214%22 fill=%22%230a0d13%22 stroke=%22%23f5a524%22 stroke-width=%223%22/%3E%3Cpath d=%22M10 22 16 8 22 22z%22 fill=%22none%22 stroke=%22%23f5a524%22 stroke-width=%222.5%22/%3E%3C/svg%3E">
+<meta name="description" content="Теория, ритм и слух прямо на грифе электрогитары">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="2.6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <radialGradient id="discGrad"><stop offset="0" stop-color="#161d2c"/><stop offset="1" stop-color="#0d1119"/></radialGradient>
+    <marker id="arrow-w" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ffffff"/></marker>
+    <marker id="arrow-o" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f5a524"/></marker>
+    <marker id="arrow-p" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9d8cff"/></marker>
+    <marker id="arrow-c" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/></marker>
+  </defs>
+</svg>
+<div id="flash"></div>
+<header id="top">
+  <div class="top-row">
+    <div class="brand"><small>SLIMZ-СТИЛЬ · ГИТАРА</small>ГИТАРНЫЙ <span>КРУГ</span></div>
+    <div class="grow"></div>
+    <span id="snd" class="note"></span>
+    <button id="stopAll" class="iconbtn stop" hidden aria-label="Остановить всё">■ <span id="stopName">стоп</span></button>
+    <button id="gear" class="iconbtn" aria-label="Настройки" aria-expanded="false">⚙</button>
+  </div>
+  <div class="sect" id="sections"></div>
+  <nav class="tabs" id="tabs" aria-label="Вкладки"></nav>
+  <div class="statusline" id="statusline"></div>
+  <div id="settings" hidden></div>
+</header>
+<main id="page"></main>
+<noscript>Для работы приложения нужен JavaScript.</noscript>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

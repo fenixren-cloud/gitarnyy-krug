@@ -1,0 +1,33 @@
+{
+  "id": "./",
+  "name": "Гитарный круг",
+  "short_name": "Гитарный круг",
+  "description": "Теория, ритм и слух прямо на грифе электрогитары: круг = гриф, аккорды, квинты, пентатоника линейками, лады, метроном, подложка, риффы и табы, тест ритма, квизы на слух.",
+  "lang": "ru",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0d13",
+  "theme_color": "#0a0d13",
+  "categories": ["music", "education"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Метроном", "url": "./#metronome", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Подложка", "url": "./#backing", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Риффы и табы", "url": "./#riffs", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Тест ритма", "url": "./#rhythm", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" }] }
+  ],
+  "screenshots": [
+    { "src": "screenshots/krug.jpg", "sizes": "800x1720", "type": "image/jpeg", "form_factor": "narrow", "label": "Круг = гриф: интервал на круге и на грифе" },
+    { "src": "screenshots/pentatonika.jpg", "sizes": "800x1720", "type": "image/jpeg", "form_factor": "narrow", "label": "Пентатоника линейками: позиция 1 в ля миноре" },
+    { "src": "screenshots/metronom.jpg", "sizes": "800x1720", "type": "image/jpeg", "form_factor": "narrow", "label": "Метроном и упражнения с рекордами" }
+  ]
+}
