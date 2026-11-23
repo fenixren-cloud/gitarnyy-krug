@@ -204,11 +204,18 @@ export function userPlay(notes, o = {}) {
   const t = ctx.currentTime + 0.01;
   muteGuitar(t, v => v.tag !== 'rhythm');
   const list = notes.map(n => (typeof n === 'number' ? { midi: n, string: null } : n));
-  if (list.length === 1) guitarNote(list[0].midi, t, { string: list[0].string, tag: 'user', vel: o.vel || 0.95 });
+  if (list.length === 1) guitarNote(list[0].midi, t, { string: list[0].string, tag: 'user', vel: o.vel || 0.95, dur: o.dur ?? null });
   else if (o.arp) list.forEach((n, i) => guitarNote(n.midi, t + i * o.arp, { tag: 'user', vel: 0.8 }));
   else strum(list, t, { tag: 'user', gap: o.gap ?? 0.02, dir: o.dir || 'down', vel: o.vel || 0.85 });
 }
 export function stopSeqVoices() { muteGuitar(null, v => v.tag === 'seq'); }
+// Когда стихнет вся гитара приложения (время AudioContext). Пока она звучит, микрофон «играй — слушает»
+// не принимает ответы — иначе приложение услышало бы само себя из динамика.
+export function quietAt() {
+  let t = 0;
+  for (const v of voices) if (!v.dead && v.end > t) t = v.end;
+  return t;
+}
 
 // ---------- Бас ----------
 const bassVoices = [];
@@ -288,7 +295,8 @@ export const drums = {
 
 // ---------- Метроном ----------
 // level: 3 сильная, 2 средняя, 1 слабая, 0.5 деление доли
-const CLICK_F = { click: [2000, 1500, 1150, 900], wood: [1250, 1000, 850, 760], beep: [1760, 1320, 990, 880] };
+// hi — очень высокий клик (5 кГц) для теста ритма гитарой: детектор ударов слушает только до 1,2 кГц
+const CLICK_F = { click: [2000, 1500, 1150, 900], wood: [1250, 1000, 850, 760], beep: [1760, 1320, 990, 880], hi: [5600, 5000, 5000, 5000] };
 export function click(t, level, sound = 'click', vol = 1, dest) {
   if (!ctx || level <= 0) return;
   dest = dest || N.click;
@@ -302,7 +310,12 @@ export function click(t, level, sound = 'click', vol = 1, dest) {
   }
   const f = (CLICK_F[sound] || CLICK_F.click)[li];
   const o = ctx.createOscillator();
-  if (sound === 'beep') {
+  if (sound === 'hi') {
+    o.type = 'sine'; o.frequency.value = f;
+    const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(amp * 0.5, t + 0.002);
+    gn.gain.setTargetAtTime(0, t + 0.012, 0.012);
+    o.connect(gn); gn.connect(dest); o.start(t); o.stop(t + 0.08);
+  } else if (sound === 'beep') {
     o.type = 'sine'; o.frequency.value = f;
     const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(amp * 0.6, t + 0.004);
     gn.gain.setValueAtTime(amp * 0.6, t + 0.05); gn.gain.linearRampToValueAtTime(0, t + 0.07);

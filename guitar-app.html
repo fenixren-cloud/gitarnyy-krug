@@ -1155,11 +1155,18 @@ function userPlay(notes, o = {}) {
   const t = ctx.currentTime + 0.01;
   muteGuitar(t, v => v.tag !== 'rhythm');
   const list = notes.map(n => (typeof n === 'number' ? { midi: n, string: null } : n));
-  if (list.length === 1) guitarNote(list[0].midi, t, { string: list[0].string, tag: 'user', vel: o.vel || 0.95 });
+  if (list.length === 1) guitarNote(list[0].midi, t, { string: list[0].string, tag: 'user', vel: o.vel || 0.95, dur: o.dur ?? null });
   else if (o.arp) list.forEach((n, i) => guitarNote(n.midi, t + i * o.arp, { tag: 'user', vel: 0.8 }));
   else strum(list, t, { tag: 'user', gap: o.gap ?? 0.02, dir: o.dir || 'down', vel: o.vel || 0.85 });
 }
 function stopSeqVoices() { muteGuitar(null, v => v.tag === 'seq'); }
+// Когда стихнет вся гитара приложения (время AudioContext). Пока она звучит, микрофон «играй — слушает»
+// не принимает ответы — иначе приложение услышало бы само себя из динамика.
+function quietAt() {
+  let t = 0;
+  for (const v of voices) if (!v.dead && v.end > t) t = v.end;
+  return t;
+}
 
 // ---------- Бас ----------
 const bassVoices = [];
@@ -1239,7 +1246,8 @@ const drums = {
 
 // ---------- Метроном ----------
 // level: 3 сильная, 2 средняя, 1 слабая, 0.5 деление доли
-const CLICK_F = { click: [2000, 1500, 1150, 900], wood: [1250, 1000, 850, 760], beep: [1760, 1320, 990, 880] };
+// hi — очень высокий клик (5 кГц) для теста ритма гитарой: детектор ударов слушает только до 1,2 кГц
+const CLICK_F = { click: [2000, 1500, 1150, 900], wood: [1250, 1000, 850, 760], beep: [1760, 1320, 990, 880], hi: [5600, 5000, 5000, 5000] };
 function click(t, level, sound = 'click', vol = 1, dest) {
   if (!ctx || level <= 0) return;
   dest = dest || N.click;
@@ -1253,7 +1261,12 @@ function click(t, level, sound = 'click', vol = 1, dest) {
   }
   const f = (CLICK_F[sound] || CLICK_F.click)[li];
   const o = ctx.createOscillator();
-  if (sound === 'beep') {
+  if (sound === 'hi') {
+    o.type = 'sine'; o.frequency.value = f;
+    const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(amp * 0.5, t + 0.002);
+    gn.gain.setTargetAtTime(0, t + 0.012, 0.012);
+    o.connect(gn); gn.connect(dest); o.start(t); o.stop(t + 0.08);
+  } else if (sound === 'beep') {
     o.type = 'sine'; o.frequency.value = f;
     const gn = ctx.createGain(); gn.gain.setValueAtTime(0, t); gn.gain.linearRampToValueAtTime(amp * 0.6, t + 0.004);
     gn.gain.setValueAtTime(amp * 0.6, t + 0.05); gn.gain.linearRampToValueAtTime(0, t + 0.07);
@@ -1314,7 +1327,7 @@ function eventToCtxTime(ev) {
   return ctx.currentTime - (ctx.outputLatency || ctx.baseLatency || 0) - (performance.now() - stamp) / 1000;
 }
 
-return { hooks, supported, getStatus, hasCtx, now, latency, audibleNow, context, loadSamples, ensure, bus, trackGain, setGain, muteGuitar, guitarNote, strum, userPlay, stopSeqVoices, bassNote, muteBass, drums, click, bell, droneOn, startDrone, stopDrone, silenceAll, eventToCtxTime };
+return { hooks, supported, getStatus, hasCtx, now, latency, audibleNow, context, loadSamples, ensure, bus, trackGain, setGain, muteGuitar, guitarNote, strum, userPlay, stopSeqVoices, quietAt, bassNote, muteBass, drums, click, bell, droneOn, startDrone, stopDrone, silenceAll, eventToCtxTime };
 })();
 
 // ===== js/player.js =====
@@ -3464,6 +3477,73 @@ function decimate2(input, out = new Float32Array(input.length >> 1)) {
 return { createDetector, freqToMidi, midiToFreqA4, analyzeReading, createSmoother, median, decimate2 };
 })();
 
+// ===== js/onset.js =====
+__m["js/onset.js"] = (function () {
+'use strict';
+// onset.js — определение атак (ударов) в звуке с микрофона: тест ритма ударами по заглушённым струнам.
+// Чистая логика без DOM и звука, тестируется в Node (tests/onset.test.mjs).
+//
+// Как работает: сигнал пропускается через полосу 70–1200 Гц (удар по струнам там, а высокий клик метронома —
+// 5 кГц — отрезается на −50 дБ), считается энергия коротких окон по 4 мс. Удар — резкий скачок энергии
+// (в 4+ раза выше среднего за последние 40 мс) и не раньше чем через 90 мс после прошлого удара.
+// Момент удара уточняется до отсчёта: первый отсчёт, где сигнал достигает 35 % пика.
+
+// createOnsetDetector ДОЛЖНА быть самодостаточной: её текст вставляется в AudioWorklet.
+function createOnsetDetector({ sampleRate, hopSec = 0.004, ratio = 4, minRms = 0.006, refractory = 0.09, lowHz = 70, highHz = 1200, history = 10 } = {}) {
+  const hop = Math.max(16, Math.round(sampleRate * hopSec));
+  // ФВЧ 1-го порядка
+  const aHP = Math.exp((-2 * Math.PI * lowHz) / sampleRate);
+  // ФНЧ: два одинаковых биквада (RBJ, Q = 0,707) — спад 24 дБ на октаву
+  const w = (2 * Math.PI * highHz) / sampleRate, cs = Math.cos(w), al = Math.sin(w) / (2 * 0.7071), a0 = 1 + al;
+  const b0 = (1 - cs) / 2 / a0, b1 = (1 - cs) / a0, b2 = b0, a1 = (-2 * cs) / a0, a2 = (1 - al) / a0;
+  const bq = [[0, 0, 0, 0], [0, 0, 0, 0]]; // x1, x2, y1, y2 для двух звеньев
+  let xp = 0, hp = 0;
+  let cur = new Float32Array(hop), prev = new Float32Array(hop), n = 0, frame0 = 0, prevFrame0 = -1;
+  const E = [];
+  let last = -Infinity;
+  function filt(x) {
+    hp = aHP * (hp + x - xp); xp = x;
+    let v = hp;
+    for (const s of bq) {
+      const y = b0 * v + b1 * s[0] + b2 * s[1] - a1 * s[2] - a2 * s[3];
+      s[1] = s[0]; s[0] = v; s[3] = s[2]; s[2] = y; v = y;
+    }
+    return v;
+  }
+  // samples — очередной кусок сигнала, frame — номер его первого отсчёта (сквозной).
+  // Возвращает номера отсчётов, где начались удары (может быть пусто).
+  function push(samples, frame) {
+    const out = [];
+    for (let i = 0; i < samples.length; i++) {
+      if (n === 0) frame0 = frame + i;
+      cur[n++] = filt(samples[i]);
+      if (n < hop) continue;
+      let e = 0, pk = 0;
+      for (let k = 0; k < hop; k++) { const v = cur[k]; e += v * v; const a = v < 0 ? -v : v; if (a > pk) pk = a; }
+      e /= hop;
+      let mean = 0;
+      for (const x of E) mean += x;
+      mean = E.length ? mean / E.length : e;
+      if (E.length >= 3 && Math.sqrt(e) >= minRms && e > ratio * mean && frame0 - last >= refractory * sampleRate) {
+        // уточнение: первый отсчёт (в прошлом или текущем окне), где сигнал достиг 35 % пика
+        const thr = 0.35 * pk;
+        let at = -1;
+        if (prevFrame0 >= 0) for (let k = 0; k < hop; k++) { const v = prev[k]; if ((v < 0 ? -v : v) >= thr) { at = prevFrame0 + k; break; } }
+        if (at < 0) for (let k = 0; k < hop; k++) { const v = cur[k]; if ((v < 0 ? -v : v) >= thr) { at = frame0 + k; break; } }
+        if (at < 0) at = frame0;
+        if (at - last >= refractory * sampleRate) { out.push(at); last = at; }
+      }
+      E.push(e); if (E.length > history) E.shift();
+      const t = prev; prev = cur; cur = t; prevFrame0 = frame0; n = 0;
+    }
+    return out;
+  }
+  return { push, hop };
+}
+
+return { createOnsetDetector };
+})();
+
 // ===== js/tuner.js =====
 __m["js/tuner.js"] = (function () {
 'use strict';
@@ -3472,11 +3552,13 @@ __m["js/tuner.js"] = (function () {
 // Звук с микрофона обрабатывается только на устройстве и никуда не отправляется.
 const audio = __m["js/audio.js"];
 const { createDetector, decimate2 } = __m["js/pitch.js"];
+const { createOnsetDetector } = __m["js/onset.js"];
 
 // Код процессора для AudioWorklet. Детектор вставляется текстом той же функции, что тестируется в Node,
 // поэтому работает и в обычной версии, и в офлайн-файле (там нет отдельных файлов модулей).
 const workletSource = () => `const createDetector = ${createDetector.toString()};
 const decimate2 = ${decimate2.toString()};
+const createOnsetDetector = ${createOnsetDetector.toString()};
 class GkPitch extends AudioWorkletProcessor {
   constructor(options) {
     super();
@@ -3508,11 +3590,32 @@ class GkPitch extends AudioWorkletProcessor {
     return this.on;
   }
 }
-registerProcessor('gk-pitch', GkPitch);`;
+registerProcessor('gk-pitch', GkPitch);
+// Атаки (удары по струнам): время удара — по часам AudioContext с точностью до отсчёта
+class GkOnset extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.det = createOnsetDetector({ sampleRate });
+    this.on = true; this.acc = 0; this.cnt = 0; this.lvlEvery = Math.round(sampleRate * 0.05);
+    this.port.onmessage = e => { if (e.data === 'stop') this.on = false; };
+  }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) {
+      for (const f of this.det.push(ch, currentFrame)) this.port.postMessage({ kind: 'onset', t: f / sampleRate });
+      for (let i = 0; i < ch.length; i++) this.acc += ch[i] * ch[i];
+      this.cnt += ch.length;
+      if (this.cnt >= this.lvlEvery) { this.port.postMessage({ kind: 'level', rms: Math.sqrt(this.acc / this.cnt) }); this.acc = 0; this.cnt = 0; }
+    }
+    return this.on;
+  }
+}
+registerProcessor('gk-onset', GkOnset);`;
 
 let st = null;
 let listener = null;
-const debugLog = []; // для автотестов (?debug): сырые показания
+const debugLog = []; // для автотестов (?debug): сырые показания высоты
+const onsetLog = [];  // и моменты ударов
 const workletLoaded = new WeakMap();
 
 class TunerError extends Error { constructor(code, msg) { super(msg || code); this.code = code; } }
@@ -3535,8 +3638,12 @@ async function loadWorklet(ctx) {
   return workletLoaded.get(ctx);
 }
 
-// Включить микрофон. onReading({ f, c, rms, t }) — примерно 25 раз в секунду; f = null, если ноты нет.
-async function startTuner({ deviceId = '', onReading, onEnded } = {}) {
+// Включить микрофон для тюнера и «играй — слушает»: onReading({ f, c, rms, t }) ~25 раз в секунду; f = null, если ноты нет.
+const startTuner = (o = {}) => startMic({ ...o, mode: 'pitch' });
+// Включить микрофон для ударов: onOnset(t) — время удара по часам AudioContext; onLevel(rms) — уровень ~20 раз в секунду.
+const startOnsets = (o = {}) => startMic({ ...o, mode: 'onset' });
+
+async function startMic({ mode = 'pitch', deviceId = '', onReading, onOnset, onLevel, onEnded } = {}) {
   stopTuner();
   if (!micSupported()) throw new TunerError('nomic');
   const ctx = audio.ensure();
@@ -3552,15 +3659,19 @@ async function startTuner({ deviceId = '', onReading, onEnded } = {}) {
   }
   listener = onReading || null;
   const src = ctx.createMediaStreamSource(stream);
+  const trackSettings = (() => { try { return stream.getAudioTracks()[0].getSettings() || {}; } catch (e) { return {}; } })();
   const sink = ctx.createGain(); sink.gain.value = 0; sink.connect(ctx.destination); // беззвучно: только чтобы граф обрабатывался
   const s = { stream, src, sink, node: null, timer: null, mode: 'worklet' };
   try {
     await loadWorklet(ctx);
-    const node = new AudioWorkletNode(ctx, 'gk-pitch', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
-    node.port.onmessage = e => emit(e.data);
+    const node = new AudioWorkletNode(ctx, mode === 'onset' ? 'gk-onset' : 'gk-pitch', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    node.port.onmessage = mode === 'onset'
+      ? e => { const d = e.data; if (d.kind === 'onset') { onsetLog.push(d.t); if (onOnset) onOnset(d.t); } else if (onLevel) onLevel(d.rms); }
+      : e => emit(e.data);
     src.connect(node); node.connect(sink);
     s.node = node;
   } catch (e) {
+    if (mode === 'onset') { stream.getTracks().forEach(t => t.stop()); try { sink.disconnect(); } catch (er) { } throw new TunerError('noworklet'); }
     // запасной путь: AnalyserNode на основном потоке (старые браузеры)
     const an = ctx.createAnalyser();
     const det = createDetector({ sampleRate: ctx.sampleRate });
@@ -3573,7 +3684,8 @@ async function startTuner({ deviceId = '', onReading, onEnded } = {}) {
   const track = stream.getAudioTracks()[0];
   if (track) track.addEventListener('ended', () => { if (st === s) { stopTuner(); if (onEnded) onEnded(); } });
   st = s;
-  return { mode: s.mode, label: track ? track.label : '', sampleRate: ctx.sampleRate };
+  // задержка входа (если браузер её сообщает) — для начальной поправки теста ритма до калибровки
+  return { mode: s.mode, label: track ? track.label : '', sampleRate: ctx.sampleRate, inputLatency: +trackSettings.latency || 0, outputLatency: ctx.outputLatency || ctx.baseLatency || 0 };
 }
 
 function stopTuner() {
@@ -3595,7 +3707,7 @@ async function listInputs() {
   } catch (e) { return []; }
 }
 
-return { debugLog, TunerError, micSupported, tunerRunning, startTuner, stopTuner, listInputs };
+return { debugLog, onsetLog, TunerError, micSupported, tunerRunning, startTuner, startOnsets, stopTuner, listInputs };
 })();
 
 // ===== js/pages/tuner.js =====
@@ -4689,7 +4801,9 @@ function analyzeTaps(expected, taps, { window = null } = {}) {
   const msAbs = meanAbs * 1000, msSd = sd * 1000;
   const accuracy = E.length ? n / E.length : 0;
   let score = Math.round(Math.max(0, Math.min(100, 100 - Math.max(0, msAbs - 5) * 1.4 - (1 - accuracy) * 60 - extra * 2)));
+  // ровно, но всё со сдвигом ≥ 50 мс — это почти всегда задержка устройства, а не руки: нужна калибровка
   const grade = !n ? 'Нет попаданий' : accuracy < 0.6 ? 'Много пропусков — замедли темп'
+    : msSd < 20 && Math.abs(mean) >= 0.05 ? 'Ровно, но со сдвигом — сделай калибровку'
     : msSd < 12 && Math.abs(mean) < 0.015 ? 'Отлично — как машина'
     : msSd < 20 ? 'Очень хорошо' : msSd < 30 ? 'Хорошо' : msSd < 45 ? 'Неплохо' : 'Тренируйся медленнее';
   return { hits, missed, extra, mean, sd, meanAbs, score, grade, window: W };
@@ -4727,14 +4841,28 @@ const { COLORS, seg, bind, info, toast } = __m["js/ui.js"];
 const audio = __m["js/audio.js"];
 const { transport, PPQ } = __m["js/player.js"];
 const { analyzeTaps, calibrate, randomFigure, figureOnsets } = __m["js/rhythmcalc.js"];
+const { startOnsets, stopTuner } = __m["js/tuner.js"];
 
 const MODES = [['q', 'Четверти'], ['e', 'Восьмые'], ['and', 'Только «и»'], ['gaps', 'С пропусками'], ['fig', 'Фигуры']];
-const R = Object.assign({ mode: 'q', bpm: 90, bars: 8, latency: 0 }, load('rhythm', {}));
+const R = Object.assign({ mode: 'q', bpm: 90, bars: 8, latency: 0, input: 'touch', latencyMic: null }, load('rhythm', {}));
 let hist = load('rhythmHist', []);
 const RT = { phase: 'idle', expected: [], taps: [], clicks: [], fig: randomFigure(), result: null, last: null };
 let root = null;
 const persist = () => save('rhythm', R);
 const ms = x => Math.round(x * 1000);
+// «Гитарой»: удары по заглушённым струнам слышит микрофон. Клик — высокий (5 кГц), его детектор ударов не слышит.
+const guitar = () => R.input === 'guitar';
+const clickSound = () => (guitar() ? 'hi' : 'click');
+let micEst = 0.06, micOn = false; // оценка задержки «клик → удар в микрофоне» до калибровки
+const micLat = () => (R.latencyMic != null ? R.latencyMic : micEst);
+const MIC_ERR = {
+  denied: 'Нет доступа к микрофону: разреши его в настройках сайта (значок слева от адреса → Разрешения)',
+  notfound: 'Не нашёл микрофон', busy: 'Микрофон занят другой программой', nomic: 'Браузер не даёт доступ к микрофону',
+  noworklet: 'Этот браузер слишком старый для режима «гитарой» — обнови Chrome',
+};
+function stopMic() { if (micOn) { stopTuner(); micOn = false; } const w = root && root.querySelector('#rt-lvl'); if (w) w.style.width = '0'; }
+function showLevel(rms) { const el = root && root.querySelector('#rt-lvl'); if (el) { const db = rms > 0 ? 20 * Math.log10(rms) : -90; el.style.width = Math.max(0, Math.min(100, ((db + 60) / 60) * 100)) + '%'; } }
+const busy = () => transport.running && (transport.name === 'тест ритма' || transport.name === 'калибровка');
 
 function expectedFor(t0, spb) {
   const out = [];
@@ -4753,7 +4881,7 @@ function makeSource(kind) {
   const beats = calib ? 8 : R.bars * 4;
   return {
     name: calib ? 'калибровка' : 'тест ритма', kind: 'rhythm', countIn: 4,
-    onCountIn(i, t) { audio.click(t, i ? 2 : 3, 'beep'); transport.visual(t, () => setMsg(`Отсчёт: ${4 - i}`)); },
+    onCountIn(i, t) { audio.click(t, i ? 2 : 3, guitar() ? 'hi' : 'beep'); transport.visual(t, () => setMsg(`Отсчёт: ${4 - i}`)); },
     start(T, t0) {
       const spb = 60 / T.bpm;
       RT.taps = []; RT.result = null; RT.last = null;
@@ -4769,23 +4897,41 @@ function makeSource(kind) {
       }
       const bar = Math.floor(beat / 4);
       const silent = !calib && R.mode === 'gaps' && bar % 2 === 1;
-      if (!silent) audio.click(time, beat % 4 === 0 ? 3 : 1, calib ? 'wood' : 'click');
+      if (!silent) audio.click(time, beat % 4 === 0 ? 3 : 1, guitar() ? 'hi' : calib ? 'wood' : 'click');
       T.visual(time, () => { setMsg(calib ? `Стучи в клик: ${beat + 1} / 8` : `Такт ${bar + 1} / ${R.bars}${silent ? ' · клик молчит — держи темп' : ''}`); hlBeat(beat % 4); });
     },
-    stop() { if (RT.phase !== 'done') RT.phase = 'idle'; renderPad(); hlBeat(-1); },
+    stop() { if (RT.phase !== 'done') RT.phase = 'idle'; stopMic(); renderPad(); hlBeat(-1); },
   };
 }
-function begin(kind) {
+async function begin(kind) {
   audio.ensure();
+  if (guitar() && !micOn) {
+    setMsg('Включаю микрофон…');
+    try {
+      const info = await startOnsets({ onOnset: t => tapAt(t, 'mic'), onLevel: showLevel, onEnded: () => { micOn = false; } });
+      micOn = true;
+      micEst = (info.outputLatency || 0) + (info.inputLatency || 0) || 0.06;
+    } catch (e) {
+      toast(MIC_ERR[e.code] || 'Не удалось включить микрофон', 4500);
+      renderPad();
+      return;
+    }
+    if (!root) { stopMic(); return; }
+  }
   RT.phase = kind;
   transport.start(makeSource(kind), { bpm: kind === 'calib' ? 90 : R.bpm });
   renderPad();
   if (root) root.querySelector('#rt-res').innerHTML = '';
 }
 function tap(ev) {
-  if (!(transport.running && (transport.name === 'тест ритма' || transport.name === 'калибровка'))) return false;
-  const raw = audio.eventToCtxTime(ev);
-  const t = transport.name === 'калибровка' ? raw : raw - R.latency;
+  if (!busy()) return false;
+  if (guitar()) return true; // в режиме «гитарой» считаются только удары по струнам
+  return tapAt(audio.eventToCtxTime(ev), 'touch');
+}
+// raw — время удара по часам AudioContext (касание: что было слышно в момент касания; микрофон: момент прихода звука)
+function tapAt(raw, src) {
+  if (!busy()) return false;
+  const t = transport.name === 'калибровка' ? raw : raw - (src === 'mic' ? micLat() : R.latency);
   RT.taps.push(t);
   // мгновенная подсказка по ближайшему ожидаемому удару
   let best = null;
@@ -4800,18 +4946,23 @@ function tap(ev) {
   return true;
 }
 function finish(kind) {
+  // удары во время отсчёта и после конца (гитара ещё звучит, пробуешь звук) не считаем
+  const lo = RT.expected[0] - 0.3, hi = RT.expected[RT.expected.length - 1] + 0.3;
+  const taps = RT.taps.filter(t => t >= lo && t <= hi);
   if (kind === 'calib') {
-    const lat = calibrate(RT.expected, RT.taps);
+    const lat = calibrate(RT.expected, taps);
     RT.phase = 'idle';
     if (lat == null) { toast('Не хватило ударов для калибровки — нужно хотя бы 5 из 8'); renderPad(); return; }
-    R.latency = Math.max(-0.1, Math.min(0.5, lat)); persist();
-    toast(`Задержка: ${ms(R.latency)} мс — теперь она вычитается`);
+    const v = Math.max(-0.1, Math.min(0.6, lat));
+    if (guitar()) R.latencyMic = v; else R.latency = v;
+    persist();
+    toast(`Задержка${guitar() ? ' микрофона' : ''}: ${ms(v)} мс — теперь она вычитается`);
     render();
     return;
   }
-  const r = analyzeTaps(RT.expected, RT.taps);
+  const r = analyzeTaps(RT.expected, taps);
   RT.result = r; RT.phase = 'done';
-  hist.push({ d: new Date().toISOString().slice(0, 16).replace('T', ' '), mode: R.mode, bpm: R.bpm, mean: ms(r.mean), sd: ms(r.sd), score: r.score, miss: r.missed });
+  hist.push({ d: new Date().toISOString().slice(0, 16).replace('T', ' '), mode: R.mode, inp: R.input, bpm: R.bpm, mean: ms(r.mean), sd: ms(r.sd), score: r.score, miss: r.missed });
   hist = hist.slice(-20); save('rhythmHist', hist);
   renderResult();
   renderPad();
@@ -4885,12 +5036,15 @@ function render() {
     <div class="kicker">практика · тест ритма</div>
     <div class="card">
       ${seg('mode', MODES, R.mode, 'wide')}
+      <div class="row"><span class="note">Чем стучать</span>${seg('input', [['touch', 'Пальцем / пробелом'], ['guitar', '🎸 Гитарой']], R.input)}</div>
+      ${guitar() ? info('<b>Гитарой:</b> заглуши струны левой рукой (ладонь лежит на струнах, не прижимая их к ладам) и бей медиатором — микрофон ловит каждый удар с точностью до миллисекунд. <b>Нужны наушники:</b> из динамика микрофон слышит клик. Клик здесь высокий, чтобы его легче было отделить от ударов. Первый раз сделай калибровку — у микрофона своя задержка.', COLORS.fifth) : ''}
       <div class="row"><span class="note">Темп</span><button class="btn g sm" data-act="bpm" data-d="-5">−5</button><b style="font:800 22px var(--disp);color:var(--root)" id="rt-bpm">${R.bpm}</b><button class="btn g sm" data-act="bpm" data-d="5">+5</button>
         <span class="note">Тактов</span>${seg('bars', [[4, '4'], [8, '8'], [16, '16']], R.bars)}</div>
       ${R.mode === 'fig' ? `<div class="figure">${figureSVG(RT.fig)}</div><div class="row" style="justify-content:center"><button class="btn g sm" data-act="newfig">Другая фигура</button><button class="btn g sm" data-act="hearfig">▶ Послушать</button></div>` : ''}
       <p class="note">${{ q: 'Стучи на каждую долю вместе с кликом.', e: 'Клик на доли, а ты стучи восьмыми: «раз-и-два-и».', and: 'Клик на доли, а ты стучи только на «и» — между кликами. Это слабые доли, на них держится грув.', gaps: 'Такт клик звучит, такт молчит. Продолжай стучать ровно, пока клика нет.', fig: 'Простучи записанную фигуру (четверти, восьмые, паузы) в каждом такте. Клик — на доли.' }[R.mode]}</p>
       <div class="beats" style="margin:6px 0">${[1, 2, 3, 4].map(i => `<div class="beat rt-beat" style="height:34px"><b>${i}</b></div>`).join('')}</div>
-      <button type="button" class="tap" id="rt-pad">СТУЧИ<br><small style="font:600 12px var(--txt);color:var(--mu)">или пробел</small></button>
+      <button type="button" class="tap" id="rt-pad">${guitar() ? 'БЕЙ ПО СТРУНАМ<br><small style="font:600 12px var(--txt);color:var(--mu)">микрофон слушает удары</small>' : 'СТУЧИ<br><small style="font:600 12px var(--txt);color:var(--mu)">или пробел</small>'}</button>
+      <div class="tu-lvl" id="rt-lvlwrap" style="margin-top:8px" ${guitar() ? '' : 'hidden'}><i id="rt-lvl"></i></div>
       <p style="text-align:center;margin:8px 0 0"><b id="rt-live" style="font-size:18px">&nbsp;</b></p>
       <p class="note" style="text-align:center" id="rt-msg"></p>
       <button class="btn bigplay" id="rt-go" data-act="go">▶ Начать тест</button>
@@ -4900,11 +5054,11 @@ function render() {
       <h3 style="margin-top:0">Калибровка задержки</h3>
       <p>Звук доходит до ушей не мгновенно: проводные наушники ~10–30 мс, <b>Bluetooth — 150–250 мс</b>. Без калибровки тест считал бы, что ты опаздываешь. Нажми «Калибровка» и простучи 8 кликов как можно точнее — медиана твоих отклонений станет поправкой.</p>
       <div class="row"><button class="btn c" id="rt-cal" data-act="calib">Калибровка (8 ударов)</button><button class="btn g sm" data-act="reset">Сбросить</button>
-        <span>Сейчас вычитается: <b style="color:var(--fifth)">${ms(R.latency)} мс</b></span></div>
+        <span>Сейчас вычитается${guitar() ? ' (гитара)' : ''}: <b style="color:var(--fifth)">${guitar() ? (R.latencyMic != null ? ms(R.latencyMic) + ' мс' : `~${ms(micEst)} мс — оценка, сделай калибровку`) : ms(R.latency) + ' мс'}</b></span></div>
       <p class="note">Время ударов сравнивается по часам AudioContext с поправкой на задержку вывода${outL != null ? ` (браузер сообщает: outputLatency ${outL} мс, baseLatency ${baseL} мс)` : ''}.</p>
     </div>
     <div class="card"><h3 style="margin-top:0">История</h3>
-      ${hist.length ? `<div class="tablewrap"><table><thead><tr><th>Когда</th><th>Режим</th><th>BPM</th><th>Смещение</th><th>Разброс</th><th>Балл</th></tr></thead><tbody>${hist.slice().reverse().map(h => `<tr><td>${h.d.slice(5)}</td><td>${(MODES.find(m => m[0] === h.mode) || [0, h.mode])[1]}</td><td>${h.bpm}</td><td>${h.mean > 0 ? '+' : ''}${h.mean}</td><td>±${h.sd}</td><td><b>${h.score}</b></td></tr>`).join('')}</tbody></table></div>` : '<p class="note">Пока пусто.</p>'}
+      ${hist.length ? `<div class="tablewrap"><table><thead><tr><th>Когда</th><th>Режим</th><th>BPM</th><th>Смещение</th><th>Разброс</th><th>Балл</th></tr></thead><tbody>${hist.slice().reverse().map(h => `<tr><td>${h.d.slice(5)}</td><td>${(MODES.find(m => m[0] === h.mode) || [0, h.mode])[1]}${h.inp === 'guitar' ? ' 🎸' : ''}</td><td>${h.bpm}</td><td>${h.mean > 0 ? '+' : ''}${h.mean}</td><td>±${h.sd}</td><td><b>${h.score}</b></td></tr>`).join('')}</tbody></table></div>` : '<p class="note">Пока пусто.</p>'}
     </div>`;
   root.querySelector('#rt-pad').addEventListener('pointerdown', e => { e.preventDefault(); audio.ensure(); tap(e); });
   renderPad();
@@ -4915,16 +5069,19 @@ const page = {
   id: 'rhythm', title: 'Тест ритма', section: 'practice',
   mount(el) {
     root = el;
+    this._vis = () => { if (document.hidden && micOn) { if (busy()) transport.stop(); stopMic(); } };
+    document.addEventListener('visibilitychange', this._vis);
     render();
     bind(el, {
       seg: {
         mode: v => { R.mode = v; persist(); render(); },
         bars: v => { R.bars = +v; persist(); },
+        input: v => { if (busy()) transport.stop(); R.input = v; persist(); render(); },
       },
       act: {
-        go: () => { if (transport.running && (transport.name === 'тест ритма' || transport.name === 'калибровка')) { transport.stop(); RT.phase = 'idle'; renderPad(); } else begin('test'); },
+        go: () => { if (busy()) { transport.stop(); RT.phase = 'idle'; renderPad(); } else begin('test'); },
         calib: () => begin('calib'),
-        reset: () => { R.latency = 0; persist(); render(); },
+        reset: () => { if (guitar()) R.latencyMic = null; else R.latency = 0; persist(); render(); },
         bpm: b => { R.bpm = Math.max(40, Math.min(200, R.bpm + +b.dataset.d)); persist(); el.querySelector('#rt-bpm').textContent = R.bpm; },
         newfig: () => { RT.fig = randomFigure(); render(); },
         hearfig: () => {
@@ -4936,11 +5093,60 @@ const page = {
       },
     });
   },
-  unmount() { root = null; },
+  unmount() {
+    if (guitar() && busy()) transport.stop(); // тест гитарой без экрана не имеет смысла — останавливаем и гасим микрофон
+    stopMic();
+    document.removeEventListener('visibilitychange', this._vis);
+    root = null;
+  },
   onSpace(e) { if (tap(e)) return true; begin('test'); return true; },
 };
 
 return { page };
+})();
+
+// ===== js/listen.js =====
+__m["js/listen.js"] = (function () {
+'use strict';
+// listen.js — «играй — приложение слушает»: из потока измерений высоты (~25 в секунду) делает отдельные
+// сыгранные ноты и сравнивает их с ответом. Чистая логика без DOM и звука (tests/listen.test.mjs).
+
+// Нота засчитывается, когда несколько измерений подряд совпали (±35 ц): атака не даёт ложных нот.
+// Та же нота ещё раз — только после паузы (звук затих) или нового удара (громкость резко выросла).
+function createNoteListener({ a4 = 440, stable = 3, spread = 35, minRms = 0.006, retrigger = 1.8, gap = 2 } = {}) {
+  let run = [], lastNote = null, quiet = gap, prevRms = 0, armed = true;
+  const reset = () => { run = []; armed = true; quiet = gap; prevRms = 0; };
+  function push(r) {
+    const rms = (r && r.rms) || 0;
+    if (!r || !r.f || rms < minRms) {
+      run = []; quiet++; prevRms = rms;
+      if (quiet >= gap) armed = true;
+      return null;
+    }
+    if (prevRms > 0 && rms > retrigger * prevRms) { run = []; armed = true; } // новый удар по струне
+    quiet = 0; prevRms = rms;
+    const m = 69 + 12 * Math.log2(r.f / a4);
+    run.push(m);
+    if (run.length > stable) run.shift();
+    if (run.length < stable) return null;
+    const s = [...run].sort((x, y) => x - y), med = s[s.length >> 1];
+    if ((s[s.length - 1] - s[0]) * 100 > 2 * spread) return null; // ещё «плывёт»
+    const note = Math.round(med);
+    if (!armed && note === lastNote) return null;
+    armed = false; lastNote = note;
+    return { midi: med, note, cents: (med - note) * 100, t: r.t };
+  }
+  return { push, reset };
+}
+
+// Совпадает ли сыгранное с нужной нотой: 'ok' — в пределах ±tol центов, 'close' — та же нота,
+// но гитара расстроена (40–60 ц), 'no' — другая нота.
+function matchPitch(midi, target, tol = 40) {
+  const d = Math.abs(midi - target) * 100;
+  return d <= tol ? 'ok' : d <= 60 ? 'close' : 'no';
+}
+
+return { createNoteListener, matchPitch };
 })();
 
 // ===== js/pages/ear.js =====
@@ -4953,9 +5159,12 @@ const { settings, tuning } = __m["js/state.js"];
 const { mod12, INTERVALS, CHORDS, chordPcs, chordRoot, chordSymbol, keyTonic, diatonicChords, pentaPositions, modePositions, spellPc, spellScale, MODES, pcOf, bestVoicing, voicingMidis, STRING_NUM, ruName } = __m["js/music.js"];
 const { createFretboard } = __m["js/fretboard.js"];
 const { chromaticSVG } = __m["js/circle.js"];
-const { COLORS, QUALITY_COLOR, nm, pcName, chips, seg, bind, info, toast } = __m["js/ui.js"];
+const { COLORS, QUALITY_COLOR, nm, pcName, chips, seg, bind, info, toast, esc } = __m["js/ui.js"];
 const audio = __m["js/audio.js"];
-const { playNotes } = __m["js/player.js"];
+const { playNotes, transport } = __m["js/player.js"];
+const { startTuner, stopTuner } = __m["js/tuner.js"];
+const { createNoteListener, matchPitch } = __m["js/listen.js"];
+const { MAX_FRET } = __m["js/music.js"];
 
 const QUIZZES = [['dict', 'Диктант'], ['find', 'Найти ноту'], ['build', 'Собрать аккорд'], ['odd', 'Кто лишний'], ['iv', 'Интервал'], ['chord', 'Аккорд']];
 const SONGS = { 1: '«Челюсти» — тема из фильма', 2: '«Happy Birthday» — 2-й и 3-й слог', 3: '«Smoke on the Water» (Deep Purple) — первые две ноты риффа', 4: '«When the Saints Go Marching In» — начало',
@@ -4970,6 +5179,13 @@ const best = load('earBest', {});
 const streak = {};
 const persist = () => save('ear', Q);
 let root = null, fb = null, task = null;
+// «Отвечать гитарой»: микрофон слушает сыгранные ноты (диктант и «Найти ноту»)
+const LS = { on: false, starting: false, heard: '' };
+const listener = createNoteListener();
+const LISTEN_ERR = {
+  denied: 'Нет доступа к микрофону: разреши его в настройках сайта (значок слева от адреса → Разрешения)',
+  notfound: 'Не нашёл микрофон', busy: 'Микрофон занят другой программой', nomic: 'Браузер не даёт доступ к микрофону',
+};
 const rnd = n => Math.floor(Math.random() * n);
 const pick = a => a[rnd(a.length)];
 
@@ -5008,7 +5224,8 @@ function playDict(slow = false) {
   if (!task) return;
   const notes = task.mel.map(m => ({ midi: m }));
   if (Q.dRef === 'tonic') notes.unshift({ midi: task.tonic, vel: 0.7 }, { midi: null });
-  playNotes('диктант', notes, { bpm: slow ? 50 : 84, step: 12 });
+  // когда отвечаешь гитарой, ноты короткие: приложение быстрее замолкает и микрофон снова слушает тебя
+  playNotes('диктант', notes, { bpm: slow ? 50 : 84, step: 12, dur: LS.on ? 0.45 : null });
 }
 function dictTap(s, f, midi) {
   if (!task || task.kind !== 'dict' || task.idx >= task.mel.length) return;
@@ -5118,14 +5335,17 @@ function renderTask() {
   }
   box.innerHTML = h;
 }
+const listenHTML = () => `<div class="row"><button type="button" class="chip ${LS.on ? 'on' : ''}" data-act="listen">🎸 Отвечать гитарой</button>
+  <span class="note" id="ea-heard">${LS.on ? esc(LS.heard || 'Слушаю… сыграй ноту') : 'сыграй ответ на гитаре — приложение услышит'}</span></div>
+  <div class="tu-lvl" id="ea-lvlwrap" ${LS.on ? '' : 'hidden'}><i id="ea-lvl"></i></div>`;
 function settingsHTML() {
-  if (Q.quiz === 'dict') return `<div class="row"><span class="note">Уровень</span>${seg('dLevel', [['penta', 'Пентатоника'], ['scale', 'Гамма'], ['chrom', 'Хроматика']], Q.dLevel)}</div>
+  if (Q.quiz === 'dict') return `${listenHTML()}<div class="row"><span class="note">Уровень</span>${seg('dLevel', [['penta', 'Пентатоника'], ['scale', 'Гамма'], ['chrom', 'Хроматика']], Q.dLevel)}</div>
     <div class="row"><span class="note">Нот</span>${seg('dCount', [[2, '2'], [3, '3'], [4, '4'], [5, '5']], Q.dCount)}<span class="note">Ориентир</span>${seg('dRef', [['first', 'первая нота'], ['tonic', 'тоника']], Q.dRef)}</div>
     <div class="row"><span class="note">Тоника</span>${chips('dRoot', [[9, 'Am'], [4, 'Em'], [2, 'Dm'], [7, 'Gm']], Q.dRoot)}<span class="note">Позиция</span>${seg('dPos', [0, 1, 2, 3, 4].map(i => [i, String(i + 1)]), Q.dPos)}</div>
     ${info('Зачем: так подбирают риффы на слух. Слушай не «какая нота», а <b>куда и насколько</b> сдвинулась мелодия: вверх/вниз, на 1–2 лада или прыжок. Начни с 2 нот внутри пентатоники.', COLORS.fifth)}`;
   if (Q.quiz === 'iv') return `<div class="row"><span class="note">Уровень</span>${seg('ivLevel', [['easy', 'лёгкий'], ['medium', 'средний'], ['hard', 'все']], Q.ivLevel)}</div><div class="row"><span class="note">Как</span>${seg('ivDir', [['up', 'вверх'], ['down', 'вниз'], ['harm', 'вместе'], ['mix', 'вперемешку']], Q.ivDir)}</div>`;
   if (Q.quiz === 'chord') return `<div class="row"><span class="note">Уровень</span>${seg('chLevel', [['easy', 'мажор/минор'], ['medium', '+ dim, aug, sus4, пауэр'], ['hard', 'септаккорды']], Q.chLevel)}</div>`;
-  if (Q.quiz === 'find') return `<p class="note">Коснись нужной ноты на указанной струне. Помни: соседние струны +5, на 12-м ладу всё повторяется.</p>`;
+  if (Q.quiz === 'find') return `${listenHTML()}<p class="note">Коснись нужной ноты на указанной струне или сыграй её на гитаре. Помни: соседние струны +5, на 12-м ладу всё повторяется.</p>`;
   return '';
 }
 function render() {
@@ -5140,10 +5360,13 @@ function render() {
   newTask();
 }
 function onFretTap(s, f, midi) {
-  audio.userPlay([{ midi, string: s }]);
+  audio.userPlay([{ midi, string: s }], LS.on ? { dur: 0.5 } : {});
   if (!task) return;
   if (task.kind === 'dict') { dictTap(s, f, midi); return; }
-  if (task.kind === 'find' && !task.done) {
+  answerFind(s, f, midi);
+}
+function answerFind(s, f, midi) {
+  if (task && task.kind === 'find' && !task.done) {
     const ok = s === task.s && mod12(midi) === task.pc;
     fb.setCursor([{ s, f, color: ok ? '#3fbf7f' : COLORS.seventh }]);
     if (ok) { score(true); toast('Верно!'); setTimeout(() => { if (root && Q.quiz === 'find') newTask(); }, 700); }
@@ -5151,14 +5374,82 @@ function onFretTap(s, f, midi) {
   }
 }
 
+// ---------- «Отвечать гитарой» ----------
+async function startListen() {
+  if (LS.starting) return;
+  LS.starting = true;
+  try {
+    await startTuner({ onReading: onMicReading, onEnded: () => { LS.on = false; updListen(); } });
+    LS.on = true; LS.heard = ''; listener.reset();
+    if (!root) stopListen();
+  } catch (e) {
+    LS.on = false;
+    toast(LISTEN_ERR[e.code] || 'Не удалось включить микрофон', 4000);
+  }
+  LS.starting = false;
+  updListen();
+}
+function stopListen() { if (LS.on) stopTuner(); LS.on = false; updListen(); }
+function updListen() {
+  if (!root) return;
+  const b = root.querySelector('[data-act="listen"]');
+  if (b) b.classList.toggle('on', LS.on);
+  const h = root.querySelector('#ea-heard');
+  if (h) h.textContent = LS.on ? (LS.heard || 'Слушаю… сыграй ноту') : 'сыграй ответ на гитаре — приложение услышит';
+  const w = root.querySelector('#ea-lvlwrap');
+  if (w) w.hidden = !LS.on;
+}
+function setHeard(t) { LS.heard = t; const h = root && root.querySelector('#ea-heard'); if (h) h.textContent = t; }
+// Измерение с микрофона (~25 раз в секунду)
+function onMicReading(r) {
+  if (!root) return;
+  const lvl = root.querySelector('#ea-lvl');
+  if (lvl) { const db = r.rms > 0 ? 20 * Math.log10(r.rms) : -90; lvl.style.width = Math.max(0, Math.min(100, ((db + 60) / 60) * 100)) + '%'; }
+  // пока звучит само приложение (мелодия диктанта, нажатая нота) — не слушаем, иначе оно услышит себя
+  if (transport.running || audio.quietAt() > audio.now()) { listener.reset(); return; }
+  const ev = listener.push(r);
+  if (ev) onPlayed(ev);
+}
+// где на грифе показать сыгранную ноту: сначала в окне диктанта или на струне задания
+function posFor(midi, prefer = null) {
+  const tun = tuning();
+  if (task && task.win) { const n = task.win.find(x => x.midi === midi); if (n) return { s: n.s, f: n.f }; }
+  if (prefer != null && midi - tun[prefer] >= 0 && midi - tun[prefer] <= MAX_FRET) return { s: prefer, f: midi - tun[prefer] };
+  for (let s = 0; s < 6; s++) { const f = midi - tun[s]; if (f >= 0 && f <= 12) return { s, f }; }
+  return { s: 0, f: Math.max(0, midi - tun[0]) };
+}
+function onPlayed(ev) {
+  const name = `${nm(spellPc(mod12(ev.note)))}${Math.floor(ev.note / 12) - 1}`;
+  const c = Math.round(ev.cents), heard = `Слышу: ${name} ${c >= 0 ? '+' : '−'}${Math.abs(c)} ц`;
+  setHeard(heard);
+  if (!task) return;
+  if (task.kind === 'dict') {
+    if (task.idx >= task.mel.length) return;
+    const want = task.mel[task.idx], m = matchPitch(ev.midi, want);
+    if (m === 'close') { setHeard(`${heard} — почти! Гитара расстроена: проверь тюнером`); return; }
+    const midi = m === 'ok' ? want : ev.note, p = posFor(midi);
+    dictTap(p.s, p.f, midi);
+  } else if (task.kind === 'find' && !task.done) {
+    const lo = tuning()[task.s], fret = ev.note - lo;
+    const right = mod12(ev.note) === task.pc && fret >= 0 && fret <= 12;
+    if (right && matchPitch(ev.midi, ev.note) === 'close') { setHeard(`${heard} — почти! Гитара расстроена: проверь тюнером`); return; }
+    if (right) answerFind(task.s, fret, ev.note);
+    else { const p = posFor(ev.note, task.s); answerFind(p.s === task.s ? p.s : -1, p.f, ev.note); }
+  }
+}
+const debugListen = r => onMicReading(r); // для автотестов (?debug)
+const debugTask = () => task;
+
 const page = {
   id: 'ear', title: 'Слух и квизы', section: 'practice',
   mount(el) {
     root = el;
+    this._vis = () => { if (document.hidden) stopListen(); }; // свернул приложение — микрофон выключаем
+    document.addEventListener('visibilitychange', this._vis);
     render();
     bind(el, {
       seg: {
-        quiz: v => { Q.quiz = v; persist(); render(); },
+        quiz: v => { Q.quiz = v; persist(); if (v !== 'dict' && v !== 'find') stopListen(); render(); },
         dLevel: v => { Q.dLevel = v; persist(); newTask(); }, dCount: v => { Q.dCount = +v; persist(); newTask(); },
         dRef: v => { Q.dRef = v; persist(); newTask(); }, dRoot: v => { Q.dRoot = +v; persist(); newTask(); }, dPos: v => { Q.dPos = +v; persist(); newTask(); },
         ivLevel: v => { Q.ivLevel = v; persist(); newTask(); }, ivDir: v => { Q.ivDir = v; persist(); newTask(); },
@@ -5166,6 +5457,7 @@ const page = {
       },
       act: {
         next: () => newTask(),
+        listen: () => (LS.on ? stopListen() : startListen()),
         replay: () => { if (task.kind === 'dict') playDict(); else if (task.kind === 'iv') playIv(); else playChordTask(); },
         slow: () => playDict(true),
         arp: () => playChordTask(true),
@@ -5185,11 +5477,11 @@ const page = {
       },
     });
   },
-  unmount() { root = null; fb = null; },
+  unmount() { stopListen(); document.removeEventListener('visibilitychange', this._vis); root = null; fb = null; },
   onSettings(k) { if (k === 'tuning') newTask(); else renderTask(); },
 };
 
-return { page };
+return { debugListen, debugTask, page };
 })();
 
 // ===== js/pages/plan.js =====
@@ -5308,7 +5600,7 @@ const { debugLog: tunerLog } = __m["js/tuner.js"];
 const { page: backing } = __m["js/pages/backing.js"];
 const { page: riffs } = __m["js/pages/riffs.js"];
 const { page: rhythm } = __m["js/pages/rhythm.js"];
-const { page: ear } = __m["js/pages/ear.js"];
+const { page: ear, debugListen: earListen, debugTask: earTask } = __m["js/pages/ear.js"];
 const { page: plan } = __m["js/pages/plan.js"];
 
 const PAGES = [chromatic, chords, fifths, penta, modes, sevenths, tuner, metronome, backing, riffs, rhythm, ear, plan];
@@ -5459,7 +5751,7 @@ document.addEventListener('keydown', e => {
 });
 
 // отладка автотестов: только при ?debug в адресе (в артефакте не используется)
-try { if (/[?&]debug\b/.test(location.search)) window.__gk = { audio, transport, settings, setSetting, tunerLog }; } catch (e) { }
+try { if (/[?&]debug\b/.test(location.search)) window.__gk = { audio, transport, settings, setSetting, tunerLog, earListen, earTask }; } catch (e) { }
 renderStatus();
 renderSnd();
 renderStop();

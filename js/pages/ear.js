@@ -6,9 +6,12 @@ import { mod12, INTERVALS, CHORDS, chordPcs, chordRoot, chordSymbol, keyTonic, d
   spellPc, spellScale, MODES, pcOf, bestVoicing, voicingMidis, STRING_NUM, ruName } from '../music.js';
 import { createFretboard } from '../fretboard.js';
 import { chromaticSVG } from '../circle.js';
-import { COLORS, QUALITY_COLOR, nm, pcName, chips, seg, bind, info, toast } from '../ui.js';
+import { COLORS, QUALITY_COLOR, nm, pcName, chips, seg, bind, info, toast, esc } from '../ui.js';
 import * as audio from '../audio.js';
-import { playNotes } from '../player.js';
+import { playNotes, transport } from '../player.js';
+import { startTuner, stopTuner } from '../tuner.js';
+import { createNoteListener, matchPitch } from '../listen.js';
+import { MAX_FRET } from '../music.js';
 
 const QUIZZES = [['dict', 'Диктант'], ['find', 'Найти ноту'], ['build', 'Собрать аккорд'], ['odd', 'Кто лишний'], ['iv', 'Интервал'], ['chord', 'Аккорд']];
 const SONGS = { 1: '«Челюсти» — тема из фильма', 2: '«Happy Birthday» — 2-й и 3-й слог', 3: '«Smoke on the Water» (Deep Purple) — первые две ноты риффа', 4: '«When the Saints Go Marching In» — начало',
@@ -23,6 +26,13 @@ const best = load('earBest', {});
 const streak = {};
 const persist = () => save('ear', Q);
 let root = null, fb = null, task = null;
+// «Отвечать гитарой»: микрофон слушает сыгранные ноты (диктант и «Найти ноту»)
+const LS = { on: false, starting: false, heard: '' };
+const listener = createNoteListener();
+const LISTEN_ERR = {
+  denied: 'Нет доступа к микрофону: разреши его в настройках сайта (значок слева от адреса → Разрешения)',
+  notfound: 'Не нашёл микрофон', busy: 'Микрофон занят другой программой', nomic: 'Браузер не даёт доступ к микрофону',
+};
 const rnd = n => Math.floor(Math.random() * n);
 const pick = a => a[rnd(a.length)];
 
@@ -61,7 +71,8 @@ function playDict(slow = false) {
   if (!task) return;
   const notes = task.mel.map(m => ({ midi: m }));
   if (Q.dRef === 'tonic') notes.unshift({ midi: task.tonic, vel: 0.7 }, { midi: null });
-  playNotes('диктант', notes, { bpm: slow ? 50 : 84, step: 12 });
+  // когда отвечаешь гитарой, ноты короткие: приложение быстрее замолкает и микрофон снова слушает тебя
+  playNotes('диктант', notes, { bpm: slow ? 50 : 84, step: 12, dur: LS.on ? 0.45 : null });
 }
 function dictTap(s, f, midi) {
   if (!task || task.kind !== 'dict' || task.idx >= task.mel.length) return;
@@ -171,14 +182,17 @@ function renderTask() {
   }
   box.innerHTML = h;
 }
+const listenHTML = () => `<div class="row"><button type="button" class="chip ${LS.on ? 'on' : ''}" data-act="listen">🎸 Отвечать гитарой</button>
+  <span class="note" id="ea-heard">${LS.on ? esc(LS.heard || 'Слушаю… сыграй ноту') : 'сыграй ответ на гитаре — приложение услышит'}</span></div>
+  <div class="tu-lvl" id="ea-lvlwrap" ${LS.on ? '' : 'hidden'}><i id="ea-lvl"></i></div>`;
 function settingsHTML() {
-  if (Q.quiz === 'dict') return `<div class="row"><span class="note">Уровень</span>${seg('dLevel', [['penta', 'Пентатоника'], ['scale', 'Гамма'], ['chrom', 'Хроматика']], Q.dLevel)}</div>
+  if (Q.quiz === 'dict') return `${listenHTML()}<div class="row"><span class="note">Уровень</span>${seg('dLevel', [['penta', 'Пентатоника'], ['scale', 'Гамма'], ['chrom', 'Хроматика']], Q.dLevel)}</div>
     <div class="row"><span class="note">Нот</span>${seg('dCount', [[2, '2'], [3, '3'], [4, '4'], [5, '5']], Q.dCount)}<span class="note">Ориентир</span>${seg('dRef', [['first', 'первая нота'], ['tonic', 'тоника']], Q.dRef)}</div>
     <div class="row"><span class="note">Тоника</span>${chips('dRoot', [[9, 'Am'], [4, 'Em'], [2, 'Dm'], [7, 'Gm']], Q.dRoot)}<span class="note">Позиция</span>${seg('dPos', [0, 1, 2, 3, 4].map(i => [i, String(i + 1)]), Q.dPos)}</div>
     ${info('Зачем: так подбирают риффы на слух. Слушай не «какая нота», а <b>куда и насколько</b> сдвинулась мелодия: вверх/вниз, на 1–2 лада или прыжок. Начни с 2 нот внутри пентатоники.', COLORS.fifth)}`;
   if (Q.quiz === 'iv') return `<div class="row"><span class="note">Уровень</span>${seg('ivLevel', [['easy', 'лёгкий'], ['medium', 'средний'], ['hard', 'все']], Q.ivLevel)}</div><div class="row"><span class="note">Как</span>${seg('ivDir', [['up', 'вверх'], ['down', 'вниз'], ['harm', 'вместе'], ['mix', 'вперемешку']], Q.ivDir)}</div>`;
   if (Q.quiz === 'chord') return `<div class="row"><span class="note">Уровень</span>${seg('chLevel', [['easy', 'мажор/минор'], ['medium', '+ dim, aug, sus4, пауэр'], ['hard', 'септаккорды']], Q.chLevel)}</div>`;
-  if (Q.quiz === 'find') return `<p class="note">Коснись нужной ноты на указанной струне. Помни: соседние струны +5, на 12-м ладу всё повторяется.</p>`;
+  if (Q.quiz === 'find') return `${listenHTML()}<p class="note">Коснись нужной ноты на указанной струне или сыграй её на гитаре. Помни: соседние струны +5, на 12-м ладу всё повторяется.</p>`;
   return '';
 }
 function render() {
@@ -193,10 +207,13 @@ function render() {
   newTask();
 }
 function onFretTap(s, f, midi) {
-  audio.userPlay([{ midi, string: s }]);
+  audio.userPlay([{ midi, string: s }], LS.on ? { dur: 0.5 } : {});
   if (!task) return;
   if (task.kind === 'dict') { dictTap(s, f, midi); return; }
-  if (task.kind === 'find' && !task.done) {
+  answerFind(s, f, midi);
+}
+function answerFind(s, f, midi) {
+  if (task && task.kind === 'find' && !task.done) {
     const ok = s === task.s && mod12(midi) === task.pc;
     fb.setCursor([{ s, f, color: ok ? '#3fbf7f' : COLORS.seventh }]);
     if (ok) { score(true); toast('Верно!'); setTimeout(() => { if (root && Q.quiz === 'find') newTask(); }, 700); }
@@ -204,14 +221,82 @@ function onFretTap(s, f, midi) {
   }
 }
 
+// ---------- «Отвечать гитарой» ----------
+async function startListen() {
+  if (LS.starting) return;
+  LS.starting = true;
+  try {
+    await startTuner({ onReading: onMicReading, onEnded: () => { LS.on = false; updListen(); } });
+    LS.on = true; LS.heard = ''; listener.reset();
+    if (!root) stopListen();
+  } catch (e) {
+    LS.on = false;
+    toast(LISTEN_ERR[e.code] || 'Не удалось включить микрофон', 4000);
+  }
+  LS.starting = false;
+  updListen();
+}
+function stopListen() { if (LS.on) stopTuner(); LS.on = false; updListen(); }
+function updListen() {
+  if (!root) return;
+  const b = root.querySelector('[data-act="listen"]');
+  if (b) b.classList.toggle('on', LS.on);
+  const h = root.querySelector('#ea-heard');
+  if (h) h.textContent = LS.on ? (LS.heard || 'Слушаю… сыграй ноту') : 'сыграй ответ на гитаре — приложение услышит';
+  const w = root.querySelector('#ea-lvlwrap');
+  if (w) w.hidden = !LS.on;
+}
+function setHeard(t) { LS.heard = t; const h = root && root.querySelector('#ea-heard'); if (h) h.textContent = t; }
+// Измерение с микрофона (~25 раз в секунду)
+function onMicReading(r) {
+  if (!root) return;
+  const lvl = root.querySelector('#ea-lvl');
+  if (lvl) { const db = r.rms > 0 ? 20 * Math.log10(r.rms) : -90; lvl.style.width = Math.max(0, Math.min(100, ((db + 60) / 60) * 100)) + '%'; }
+  // пока звучит само приложение (мелодия диктанта, нажатая нота) — не слушаем, иначе оно услышит себя
+  if (transport.running || audio.quietAt() > audio.now()) { listener.reset(); return; }
+  const ev = listener.push(r);
+  if (ev) onPlayed(ev);
+}
+// где на грифе показать сыгранную ноту: сначала в окне диктанта или на струне задания
+function posFor(midi, prefer = null) {
+  const tun = tuning();
+  if (task && task.win) { const n = task.win.find(x => x.midi === midi); if (n) return { s: n.s, f: n.f }; }
+  if (prefer != null && midi - tun[prefer] >= 0 && midi - tun[prefer] <= MAX_FRET) return { s: prefer, f: midi - tun[prefer] };
+  for (let s = 0; s < 6; s++) { const f = midi - tun[s]; if (f >= 0 && f <= 12) return { s, f }; }
+  return { s: 0, f: Math.max(0, midi - tun[0]) };
+}
+function onPlayed(ev) {
+  const name = `${nm(spellPc(mod12(ev.note)))}${Math.floor(ev.note / 12) - 1}`;
+  const c = Math.round(ev.cents), heard = `Слышу: ${name} ${c >= 0 ? '+' : '−'}${Math.abs(c)} ц`;
+  setHeard(heard);
+  if (!task) return;
+  if (task.kind === 'dict') {
+    if (task.idx >= task.mel.length) return;
+    const want = task.mel[task.idx], m = matchPitch(ev.midi, want);
+    if (m === 'close') { setHeard(`${heard} — почти! Гитара расстроена: проверь тюнером`); return; }
+    const midi = m === 'ok' ? want : ev.note, p = posFor(midi);
+    dictTap(p.s, p.f, midi);
+  } else if (task.kind === 'find' && !task.done) {
+    const lo = tuning()[task.s], fret = ev.note - lo;
+    const right = mod12(ev.note) === task.pc && fret >= 0 && fret <= 12;
+    if (right && matchPitch(ev.midi, ev.note) === 'close') { setHeard(`${heard} — почти! Гитара расстроена: проверь тюнером`); return; }
+    if (right) answerFind(task.s, fret, ev.note);
+    else { const p = posFor(ev.note, task.s); answerFind(p.s === task.s ? p.s : -1, p.f, ev.note); }
+  }
+}
+export const debugListen = r => onMicReading(r); // для автотестов (?debug)
+export const debugTask = () => task;
+
 export const page = {
   id: 'ear', title: 'Слух и квизы', section: 'practice',
   mount(el) {
     root = el;
+    this._vis = () => { if (document.hidden) stopListen(); }; // свернул приложение — микрофон выключаем
+    document.addEventListener('visibilitychange', this._vis);
     render();
     bind(el, {
       seg: {
-        quiz: v => { Q.quiz = v; persist(); render(); },
+        quiz: v => { Q.quiz = v; persist(); if (v !== 'dict' && v !== 'find') stopListen(); render(); },
         dLevel: v => { Q.dLevel = v; persist(); newTask(); }, dCount: v => { Q.dCount = +v; persist(); newTask(); },
         dRef: v => { Q.dRef = v; persist(); newTask(); }, dRoot: v => { Q.dRoot = +v; persist(); newTask(); }, dPos: v => { Q.dPos = +v; persist(); newTask(); },
         ivLevel: v => { Q.ivLevel = v; persist(); newTask(); }, ivDir: v => { Q.ivDir = v; persist(); newTask(); },
@@ -219,6 +304,7 @@ export const page = {
       },
       act: {
         next: () => newTask(),
+        listen: () => (LS.on ? stopListen() : startListen()),
         replay: () => { if (task.kind === 'dict') playDict(); else if (task.kind === 'iv') playIv(); else playChordTask(); },
         slow: () => playDict(true),
         arp: () => playChordTask(true),
@@ -238,6 +324,6 @@ export const page = {
       },
     });
   },
-  unmount() { root = null; fb = null; },
+  unmount() { stopListen(); document.removeEventListener('visibilitychange', this._vis); root = null; fb = null; },
   onSettings(k) { if (k === 'tuning') newTask(); else renderTask(); },
 };

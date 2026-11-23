@@ -30,7 +30,9 @@ export function analyzeTaps(expected, taps, { window = null } = {}) {
   const msAbs = meanAbs * 1000, msSd = sd * 1000;
   const accuracy = E.length ? n / E.length : 0;
   let score = Math.round(Math.max(0, Math.min(100, 100 - Math.max(0, msAbs - 5) * 1.4 - (1 - accuracy) * 60 - extra * 2)));
+  // ровно, но всё со сдвигом ≥ 50 мс — это почти всегда задержка устройства, а не руки: нужна калибровка
   const grade = !n ? 'Нет попаданий' : accuracy < 0.6 ? 'Много пропусков — замедли темп'
+    : msSd < 20 && Math.abs(mean) >= 0.05 ? 'Ровно, но со сдвигом — сделай калибровку'
     : msSd < 12 && Math.abs(mean) < 0.015 ? 'Отлично — как машина'
     : msSd < 20 ? 'Очень хорошо' : msSd < 30 ? 'Хорошо' : msSd < 45 ? 'Неплохо' : 'Тренируйся медленнее';
   return { hits, missed, extra, mean, sd, meanAbs, score, grade, window: W };

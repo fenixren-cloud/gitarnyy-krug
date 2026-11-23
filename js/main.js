@@ -19,7 +19,7 @@ import { debugLog as tunerLog } from './tuner.js';
 import { page as backing } from './pages/backing.js';
 import { page as riffs } from './pages/riffs.js';
 import { page as rhythm } from './pages/rhythm.js';
-import { page as ear } from './pages/ear.js';
+import { page as ear, debugListen as earListen, debugTask as earTask } from './pages/ear.js';
 import { page as plan } from './pages/plan.js';
 
 const PAGES = [chromatic, chords, fifths, penta, modes, sevenths, tuner, metronome, backing, riffs, rhythm, ear, plan];
@@ -170,7 +170,7 @@ document.addEventListener('keydown', e => {
 });
 
 // отладка автотестов: только при ?debug в адресе (в артефакте не используется)
-try { if (/[?&]debug\b/.test(location.search)) window.__gk = { audio, transport, settings, setSetting, tunerLog }; } catch (e) { }
+try { if (/[?&]debug\b/.test(location.search)) window.__gk = { audio, transport, settings, setSetting, tunerLog, earListen, earTask }; } catch (e) { }
 renderStatus();
 renderSnd();
 renderStop();
