@@ -87,6 +87,7 @@ function dictTap(s, f, midi) {
 // ---------- остальные задания ----------
 function newTask() {
   const tun = tuning();
+  if (fb) fb.setCursor([]); // кольцо прошлого ответа на новом задании выглядело бы как подсказка
   switch (Q.quiz) {
     case 'dict': newDict(); break;
     case 'find': { const s = rnd(6); const pc = rnd(12); task = { kind: 'find', s, pc, done: false }; break; }

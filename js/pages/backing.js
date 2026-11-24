@@ -209,7 +209,11 @@ function applyMix() {
 function start() {
   audio.ensure(); setupGains();
   const chords = chordList();
-  if (!chords.length) { toast('Добавь хотя бы один аккорд'); return; }
+  if (!chords.length) {
+    // убрали последний аккорд, пока подложка играла, — она не должна доигрывать удалённое
+    if (transport.running && transport.name === 'подложка') transport.stop();
+    toast('Добавь хотя бы один аккорд'); renderPlay(); return;
+  }
   transport.start(makeSource(chords), { bpm: B.bpm });
   renderPlay();
 }

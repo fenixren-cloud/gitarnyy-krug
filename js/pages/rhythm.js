@@ -1,7 +1,7 @@
 // Вкладка «Тест ритма»: стучи вместе с кликом, приложение считает отклонение каждого удара (мс),
 // среднее смещение, разброс, рисует график и ставит оценку. Калибровка задержки устройства (Bluetooth!).
 import { load, save } from '../storage.js';
-import { COLORS, seg, bind, info, toast } from '../ui.js';
+import { COLORS, seg, bind, info, toast, localStamp } from '../ui.js';
 import * as audio from '../audio.js';
 import { transport, PPQ } from '../player.js';
 import { analyzeTaps, calibrate, randomFigure, figureOnsets } from '../rhythmcalc.js';
@@ -126,7 +126,7 @@ function finish(kind) {
   }
   const r = analyzeTaps(RT.expected, taps);
   RT.result = r; RT.phase = 'done';
-  hist.push({ d: new Date().toISOString().slice(0, 16).replace('T', ' '), mode: R.mode, inp: R.input, bpm: R.bpm, mean: ms(r.mean), sd: ms(r.sd), score: r.score, miss: r.missed });
+  hist.push({ d: localStamp(), mode: R.mode, inp: R.input, bpm: R.bpm, mean: ms(r.mean), sd: ms(r.sd), score: r.score, miss: r.missed });
   hist = hist.slice(-20); save('rhythmHist', hist);
   renderResult();
   renderPad();

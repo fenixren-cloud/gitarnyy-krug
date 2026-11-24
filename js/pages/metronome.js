@@ -2,7 +2,7 @@
 // пропуски клика, таймер занятия, упражнения с рекордами (правило: 3 раза чисто → +4 BPM).
 import { load, save } from '../storage.js';
 import { tempoName } from '../music.js';
-import { COLORS, chips, seg, bind, pill, info, toast } from '../ui.js';
+import { COLORS, chips, seg, bind, pill, info, toast, localStamp } from '../ui.js';
 import * as audio from '../audio.js';
 import { transport, PPQ } from '../player.js';
 import { clampBpm } from '../transport.js';
@@ -239,7 +239,7 @@ export const page = {
         clean: b => {
           const e = EXERCISES.find(x => x.id === b.dataset.id);
           const r = REC[e.id] || { best: 0, target: e.start, clean: 0, history: [] };
-          const bpm = M.bpm, d = new Date().toISOString().slice(0, 10);
+          const bpm = M.bpm, d = localStamp().slice(0, 10);
           r.best = Math.max(r.best || 0, bpm);
           r.history = [...(r.history || []), { d, bpm }].slice(-30);
           if (bpm >= r.target) {

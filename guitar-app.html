@@ -1541,10 +1541,15 @@ async function copyText(text, fallbackEl) {
     return false;
   }
 }
+// Местные дата и время «ГГГГ-ММ-ДД ЧЧ:ММ» (toISOString дал бы UTC: в Австрии на час раньше, после полуночи — вчера)
+function localStamp(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 const fmt = (n, d = 0) => Number(n).toFixed(d).replace('.', ',');
 function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
 
-return { COLORS, QUALITY_COLOR, famColor, degColor, nm, ru, pcName, lbl, esc, seg, chips, noteChips, pill, info, bind, toast, copyText, fmt, el };
+return { COLORS, QUALITY_COLOR, famColor, degColor, nm, ru, pcName, lbl, esc, seg, chips, noteChips, pill, info, bind, toast, copyText, localStamp, fmt, el };
 })();
 
 // ===== js/pwa.js =====
@@ -2786,7 +2791,7 @@ function update(focus = true) {
   const sig = keySignature(tonic, mode);
   const dia = diatonicChords(tonic, mode);
   root.querySelector('#fi-circle').innerHTML = circle();
-  const sigTxt = sig.sharps ? `${sig.sharps} ♯: ${sig.list.map(nm).join(' ')}` : sig.flats ? `${sig.flats} ♭: ${sig.list.map(nm).join(' ')}` : 'без знаков — только белые клавиши';
+  const sigTxt = sig.sharps ? `${sig.sharps} ♯: ${sig.list.map(nm).join(' ')}` : sig.flats ? `${sig.flats} ♭: ${sig.list.map(nm).join(' ')}` : 'без знаков — только ноты без ♯ и ♭';
   root.querySelector('#fi-sig').innerHTML = pill(sigTxt, sig.sharps ? COLORS.sharp : sig.flats ? COLORS.flat : '#e8ecf3');
   const { notes, degs } = scaleData();
   root.querySelector('#fi-notes').innerHTML = `<p><b>${S.view === 'penta' ? 'Пентатоника' : 'Гамма'}:</b> ${notes.map((n, i) => `<b style="color:${degColor(degs[i])}">${nm(n)}</b><sub class="mu">${degs[i]}</sub>`).join(' ')}</p>`;
@@ -3766,6 +3771,13 @@ function onReading(r) {
   if (!root) return;
   const lvl = root.querySelector('#tu-lvl');
   if (lvl) { const db = r.rms > 0 ? 20 * Math.log10(r.rms) : -90; lvl.style.width = Math.max(0, Math.min(100, ((db + 60) / 60) * 100)) + '%'; }
+  // пока звучит само приложение (эталон струны), микрофон слышит динамик: иначе тюнер «настроил» бы струну по эталону
+  if (audio.quietAt() > audio.now()) {
+    smoother.reset(); streak = 0;
+    const h = root.querySelector('#tu-hint');
+    if (h && status === 'on') { h.textContent = 'Звучит эталон — сыграй струну, когда он стихнет'; h.style.color = ''; }
+    return;
+  }
   if (!r.f || r.rms < 0.004) return;
   const m = smoother.push(freqToMidi(r.f, T.a4));
   if (smoother.size < 2) return; // ждём второе совпадающее измерение — без мигания на атаке
@@ -3900,6 +3912,8 @@ function render() {
   renderControls();
 }
 
+const debugReading = r => onReading(r); // для автотестов (?debug): подставить измерение микрофона
+
 const page = {
   id: 'tuner', title: 'Тюнер', section: 'practice',
   mount(el) {
@@ -3910,7 +3924,7 @@ const page = {
       act: {
         go: () => (status === 'on' ? stop() : start()),
         auto: () => { T.lock = null; persist(); renderStrings(); },
-        lock: b => { const s = +b.dataset.s; T.lock = T.lock === s ? null : s; persist(); renderStrings(); if (T.lock != null) audio.userPlay([{ midi: tuning()[s], string: s }]); },
+        lock: b => { const s = +b.dataset.s; T.lock = T.lock === s ? null : s; persist(); renderStrings(); if (T.lock != null) audio.userPlay([{ midi: tuning()[s], string: s }], status === 'on' ? { dur: 1.5 } : {}); },
         a4: b => { T.a4 = Math.max(430, Math.min(450, T.a4 + +b.dataset.d)); persist(); el.querySelector('#tu-a4').textContent = T.a4; el.querySelector('#tu-a4v').textContent = `A4 = ${T.a4} Гц`; smoother.reset(); },
       },
     });
@@ -3927,7 +3941,7 @@ const page = {
   onSettings(k) { if (k === 'tuning' || k === 'german') { tuned = new Set(); if (root) { render(); } } },
 };
 
-return { page };
+return { debugReading, page };
 })();
 
 // ===== js/pages/metronome.js =====
@@ -3937,7 +3951,7 @@ __m["js/pages/metronome.js"] = (function () {
 // пропуски клика, таймер занятия, упражнения с рекордами (правило: 3 раза чисто → +4 BPM).
 const { load, save } = __m["js/storage.js"];
 const { tempoName } = __m["js/music.js"];
-const { COLORS, chips, seg, bind, pill, info, toast } = __m["js/ui.js"];
+const { COLORS, chips, seg, bind, pill, info, toast, localStamp } = __m["js/ui.js"];
 const audio = __m["js/audio.js"];
 const { transport, PPQ } = __m["js/player.js"];
 const { clampBpm } = __m["js/transport.js"];
@@ -4174,7 +4188,7 @@ const page = {
         clean: b => {
           const e = EXERCISES.find(x => x.id === b.dataset.id);
           const r = REC[e.id] || { best: 0, target: e.start, clean: 0, history: [] };
-          const bpm = M.bpm, d = new Date().toISOString().slice(0, 10);
+          const bpm = M.bpm, d = localStamp().slice(0, 10);
           r.best = Math.max(r.best || 0, bpm);
           r.history = [...(r.history || []), { d, bpm }].slice(-30);
           if (bpm >= r.target) {
@@ -4419,7 +4433,11 @@ function applyMix() {
 function start() {
   audio.ensure(); setupGains();
   const chords = chordList();
-  if (!chords.length) { toast('Добавь хотя бы один аккорд'); return; }
+  if (!chords.length) {
+    // убрали последний аккорд, пока подложка играла, — она не должна доигрывать удалённое
+    if (transport.running && transport.name === 'подложка') transport.stop();
+    toast('Добавь хотя бы один аккорд'); renderPlay(); return;
+  }
   transport.start(makeSource(chords), { bpm: B.bpm });
   renderPlay();
 }
@@ -4745,13 +4763,19 @@ const page = {
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       if (/^\d$/.test(e.key)) {
-        const prev = noteAt(ST.sel.c, ST.sel.s);
         let f = +e.key;
-        if (ST.lastKey && performance.now() - ST.lastKey.t < 700 && ST.lastKey.c === ST.sel.c - ST.dur && prev == null) {
-          const two = ST.lastKey.f * 10 + f;
-          if (two <= 24) { ST.sel.c = ST.lastKey.c; f = two; }
+        // две цифры подряд (быстрее 0,7 с) — один лад: «1», «2» → 12. Курсор после первой цифры уже ушёл дальше,
+        // а в конце такта остался на месте — поэтому сверяем с тем, куда он встал, а не с «клетка + длительность».
+        const L = ST.lastKey;
+        if (L && performance.now() - L.t < 700 && L.next === ST.sel.c && L.s === ST.sel.s && L.f >= 1 && L.f <= 2
+          && (L.next === L.c || !noteAt(ST.sel.c, ST.sel.s))) { // по уже стоящим нотам цифры идут по одной
+          const two = L.f * 10 + f;
+          if (two <= 24) { ST.sel.c = L.c; f = two; }
         }
-        setNote(ST.sel.c, ST.sel.s, f); ST.lastKey = { t: performance.now(), c: ST.sel.c, f }; advance(); renderGrid(); e.preventDefault();
+        const c = ST.sel.c;
+        setNote(c, ST.sel.s, f); advance();
+        ST.lastKey = f < 10 ? { t: performance.now(), c, s: ST.sel.s, f, next: ST.sel.c } : null;
+        renderGrid(); e.preventDefault();
       } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { ST.sel.c = Math.max(0, Math.min(cols() - 1, ST.sel.c + (e.key === 'ArrowRight' ? 1 : -1))); renderGrid(); e.preventDefault(); }
       else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { ST.sel.s = Math.max(0, Math.min(5, ST.sel.s + (e.key === 'ArrowUp' ? 1 : -1))); renderGrid(); e.preventDefault(); }
       else if (e.key === 'Delete' || e.key === 'Backspace') { R().notes = R().notes.filter(n => !(n.c === ST.sel.c && n.s === ST.sel.s)); persistDraft(); renderGrid(); e.preventDefault(); }
@@ -4837,7 +4861,7 @@ __m["js/pages/rhythm.js"] = (function () {
 // Вкладка «Тест ритма»: стучи вместе с кликом, приложение считает отклонение каждого удара (мс),
 // среднее смещение, разброс, рисует график и ставит оценку. Калибровка задержки устройства (Bluetooth!).
 const { load, save } = __m["js/storage.js"];
-const { COLORS, seg, bind, info, toast } = __m["js/ui.js"];
+const { COLORS, seg, bind, info, toast, localStamp } = __m["js/ui.js"];
 const audio = __m["js/audio.js"];
 const { transport, PPQ } = __m["js/player.js"];
 const { analyzeTaps, calibrate, randomFigure, figureOnsets } = __m["js/rhythmcalc.js"];
@@ -4962,7 +4986,7 @@ function finish(kind) {
   }
   const r = analyzeTaps(RT.expected, taps);
   RT.result = r; RT.phase = 'done';
-  hist.push({ d: new Date().toISOString().slice(0, 16).replace('T', ' '), mode: R.mode, inp: R.input, bpm: R.bpm, mean: ms(r.mean), sd: ms(r.sd), score: r.score, miss: r.missed });
+  hist.push({ d: localStamp(), mode: R.mode, inp: R.input, bpm: R.bpm, mean: ms(r.mean), sd: ms(r.sd), score: r.score, miss: r.missed });
   hist = hist.slice(-20); save('rhythmHist', hist);
   renderResult();
   renderPad();
@@ -5243,6 +5267,7 @@ function dictTap(s, f, midi) {
 // ---------- остальные задания ----------
 function newTask() {
   const tun = tuning();
+  if (fb) fb.setCursor([]); // кольцо прошлого ответа на новом задании выглядело бы как подсказка
   switch (Q.quiz) {
     case 'dict': newDict(); break;
     case 'find': { const s = rnd(6); const pc = rnd(12); task = { kind: 'find', s, pc, done: false }; break; }
@@ -5597,7 +5622,7 @@ const { page: fifths } = __m["js/pages/fifths.js"];
 const { page: penta } = __m["js/pages/penta.js"];
 const { page: modes } = __m["js/pages/modes.js"];
 const { page: sevenths } = __m["js/pages/sevenths.js"];
-const { page: tuner } = __m["js/pages/tuner.js"];
+const { page: tuner, debugReading: tunerReading } = __m["js/pages/tuner.js"];
 const { page: metronome, toggleMetronome } = __m["js/pages/metronome.js"];
 const { debugLog: tunerLog } = __m["js/tuner.js"];
 const { page: backing } = __m["js/pages/backing.js"];
@@ -5754,7 +5779,7 @@ document.addEventListener('keydown', e => {
 });
 
 // отладка автотестов: только при ?debug в адресе (в артефакте не используется)
-try { if (/[?&]debug\b/.test(location.search)) window.__gk = { audio, transport, settings, setSetting, tunerLog, earListen, earTask, rhythmState }; } catch (e) { }
+try { if (/[?&]debug\b/.test(location.search)) window.__gk = { audio, transport, settings, setSetting, tunerLog, earListen, earTask, rhythmState, tunerReading }; } catch (e) { }
 renderStatus();
 renderSnd();
 renderStop();

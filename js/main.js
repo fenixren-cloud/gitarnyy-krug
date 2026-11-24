@@ -13,7 +13,7 @@ import { page as fifths } from './pages/fifths.js';
 import { page as penta } from './pages/penta.js';
 import { page as modes } from './pages/modes.js';
 import { page as sevenths } from './pages/sevenths.js';
-import { page as tuner } from './pages/tuner.js';
+import { page as tuner, debugReading as tunerReading } from './pages/tuner.js';
 import { page as metronome, toggleMetronome } from './pages/metronome.js';
 import { debugLog as tunerLog } from './tuner.js';
 import { page as backing } from './pages/backing.js';
@@ -170,7 +170,7 @@ document.addEventListener('keydown', e => {
 });
 
 // отладка автотестов: только при ?debug в адресе (в артефакте не используется)
-try { if (/[?&]debug\b/.test(location.search)) window.__gk = { audio, transport, settings, setSetting, tunerLog, earListen, earTask, rhythmState }; } catch (e) { }
+try { if (/[?&]debug\b/.test(location.search)) window.__gk = { audio, transport, settings, setSetting, tunerLog, earListen, earTask, rhythmState, tunerReading }; } catch (e) { }
 renderStatus();
 renderSnd();
 renderStop();

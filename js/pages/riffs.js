@@ -273,13 +273,19 @@ export const page = {
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       if (/^\d$/.test(e.key)) {
-        const prev = noteAt(ST.sel.c, ST.sel.s);
         let f = +e.key;
-        if (ST.lastKey && performance.now() - ST.lastKey.t < 700 && ST.lastKey.c === ST.sel.c - ST.dur && prev == null) {
-          const two = ST.lastKey.f * 10 + f;
-          if (two <= 24) { ST.sel.c = ST.lastKey.c; f = two; }
+        // две цифры подряд (быстрее 0,7 с) — один лад: «1», «2» → 12. Курсор после первой цифры уже ушёл дальше,
+        // а в конце такта остался на месте — поэтому сверяем с тем, куда он встал, а не с «клетка + длительность».
+        const L = ST.lastKey;
+        if (L && performance.now() - L.t < 700 && L.next === ST.sel.c && L.s === ST.sel.s && L.f >= 1 && L.f <= 2
+          && (L.next === L.c || !noteAt(ST.sel.c, ST.sel.s))) { // по уже стоящим нотам цифры идут по одной
+          const two = L.f * 10 + f;
+          if (two <= 24) { ST.sel.c = L.c; f = two; }
         }
-        setNote(ST.sel.c, ST.sel.s, f); ST.lastKey = { t: performance.now(), c: ST.sel.c, f }; advance(); renderGrid(); e.preventDefault();
+        const c = ST.sel.c;
+        setNote(c, ST.sel.s, f); advance();
+        ST.lastKey = f < 10 ? { t: performance.now(), c, s: ST.sel.s, f, next: ST.sel.c } : null;
+        renderGrid(); e.preventDefault();
       } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { ST.sel.c = Math.max(0, Math.min(cols() - 1, ST.sel.c + (e.key === 'ArrowRight' ? 1 : -1))); renderGrid(); e.preventDefault(); }
       else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { ST.sel.s = Math.max(0, Math.min(5, ST.sel.s + (e.key === 'ArrowUp' ? 1 : -1))); renderGrid(); e.preventDefault(); }
       else if (e.key === 'Delete' || e.key === 'Backspace') { R().notes = R().notes.filter(n => !(n.c === ST.sel.c && n.s === ST.sel.s)); persistDraft(); renderGrid(); e.preventDefault(); }

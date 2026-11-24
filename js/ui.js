@@ -67,5 +67,10 @@ export async function copyText(text, fallbackEl) {
     return false;
   }
 }
+// Местные дата и время «ГГГГ-ММ-ДД ЧЧ:ММ» (toISOString дал бы UTC: в Австрии на час раньше, после полуночи — вчера)
+export function localStamp(d = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 export const fmt = (n, d = 0) => Number(n).toFixed(d).replace('.', ',');
 export function el(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }

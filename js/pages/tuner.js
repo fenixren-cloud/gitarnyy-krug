@@ -51,6 +51,13 @@ function onReading(r) {
   if (!root) return;
   const lvl = root.querySelector('#tu-lvl');
   if (lvl) { const db = r.rms > 0 ? 20 * Math.log10(r.rms) : -90; lvl.style.width = Math.max(0, Math.min(100, ((db + 60) / 60) * 100)) + '%'; }
+  // пока звучит само приложение (эталон струны), микрофон слышит динамик: иначе тюнер «настроил» бы струну по эталону
+  if (audio.quietAt() > audio.now()) {
+    smoother.reset(); streak = 0;
+    const h = root.querySelector('#tu-hint');
+    if (h && status === 'on') { h.textContent = 'Звучит эталон — сыграй струну, когда он стихнет'; h.style.color = ''; }
+    return;
+  }
   if (!r.f || r.rms < 0.004) return;
   const m = smoother.push(freqToMidi(r.f, T.a4));
   if (smoother.size < 2) return; // ждём второе совпадающее измерение — без мигания на атаке
@@ -185,6 +192,8 @@ function render() {
   renderControls();
 }
 
+export const debugReading = r => onReading(r); // для автотестов (?debug): подставить измерение микрофона
+
 export const page = {
   id: 'tuner', title: 'Тюнер', section: 'practice',
   mount(el) {
@@ -195,7 +204,7 @@ export const page = {
       act: {
         go: () => (status === 'on' ? stop() : start()),
         auto: () => { T.lock = null; persist(); renderStrings(); },
-        lock: b => { const s = +b.dataset.s; T.lock = T.lock === s ? null : s; persist(); renderStrings(); if (T.lock != null) audio.userPlay([{ midi: tuning()[s], string: s }]); },
+        lock: b => { const s = +b.dataset.s; T.lock = T.lock === s ? null : s; persist(); renderStrings(); if (T.lock != null) audio.userPlay([{ midi: tuning()[s], string: s }], status === 'on' ? { dur: 1.5 } : {}); },
         a4: b => { T.a4 = Math.max(430, Math.min(450, T.a4 + +b.dataset.d)); persist(); el.querySelector('#tu-a4').textContent = T.a4; el.querySelector('#tu-a4v').textContent = `A4 = ${T.a4} Гц`; smoother.reset(); },
       },
     });

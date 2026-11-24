@@ -80,7 +80,7 @@ function update(focus = true) {
   const sig = keySignature(tonic, mode);
   const dia = diatonicChords(tonic, mode);
   root.querySelector('#fi-circle').innerHTML = circle();
-  const sigTxt = sig.sharps ? `${sig.sharps} ♯: ${sig.list.map(nm).join(' ')}` : sig.flats ? `${sig.flats} ♭: ${sig.list.map(nm).join(' ')}` : 'без знаков — только белые клавиши';
+  const sigTxt = sig.sharps ? `${sig.sharps} ♯: ${sig.list.map(nm).join(' ')}` : sig.flats ? `${sig.flats} ♭: ${sig.list.map(nm).join(' ')}` : 'без знаков — только ноты без ♯ и ♭';
   root.querySelector('#fi-sig').innerHTML = pill(sigTxt, sig.sharps ? COLORS.sharp : sig.flats ? COLORS.flat : '#e8ecf3');
   const { notes, degs } = scaleData();
   root.querySelector('#fi-notes').innerHTML = `<p><b>${S.view === 'penta' ? 'Пентатоника' : 'Гамма'}:</b> ${notes.map((n, i) => `<b style="color:${degColor(degs[i])}">${nm(n)}</b><sub class="mu">${degs[i]}</sub>`).join(' ')}</p>`;
