@@ -1,37 +1,46 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>«Гитарный круг» теперь — «Лад»</title>
-<meta name="theme-color" content="#0f1012">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0d13">
+<title>Гитарный круг — теория, ритм и слух на грифе</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Ccircle cx=%2216%22 cy=%2216%22 r=%2214%22 fill=%22%230a0d13%22 stroke=%22%23f5a524%22 stroke-width=%223%22/%3E%3Cpath d=%22M10 22 16 8 22 22z%22 fill=%22none%22 stroke=%22%23f5a524%22 stroke-width=%222.5%22/%3E%3C/svg%3E">
+<meta name="description" content="Теория, ритм и слух прямо на грифе электрогитары">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="icon" href="icons/icon-192.png">
-<meta http-equiv="refresh" content="4; url=https://fenixren-cloud.github.io/lad/">
-<style>
-  :root { color-scheme: dark; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0f1012; color: #f1efe9;
-    font: 17px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 26rem; padding: 24px; }
-  h1 { font-size: 1.6rem; line-height: 1.2; margin: 0 0 12px; }
-  p { color: #c9c6bf; margin: 0 0 14px; }
-  a.btn { display: flex; align-items: center; justify-content: center; min-height: 56px; border-radius: 999px;
-    background: #f1efe9; color: #101113; font-weight: 700; text-decoration: none; margin-top: 20px; }
-  small { display: block; color: #9a9ea7; margin-top: 16px; }
-</style>
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-<main>
-  <h1>«Гитарный круг» теперь — «Лад»</h1>
-  <p>Новое приложение: занятие на сегодня, учебная дорожка, повторения, теория на грифе, ритм, слух и свои риффы.</p>
-  <p>Твои данные в этом браузере никуда не делись: «Лад» сам предложит перенести риффы, рекорды и настройки.</p>
-  <a class="btn" href="https://fenixren-cloud.github.io/lad/">Открыть «Лад»</a>
-  <small>Переход через несколько секунд. Установленное приложение «Гитарный круг» можно удалить и установить «Лад».</small>
-</main>
-<script>
-  // старое офлайн-приложение больше не нужно: снимаем его service worker (данные браузера не трогаем)
-  if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistrations().then(rs => rs.forEach(r => r.unregister())).catch(() => {});
-  setTimeout(() => location.replace('https://fenixren-cloud.github.io/lad/'), 2500);
-</script>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <filter id="glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="2.6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <radialGradient id="discGrad"><stop offset="0" stop-color="#161d2c"/><stop offset="1" stop-color="#0d1119"/></radialGradient>
+    <marker id="arrow-w" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ffffff"/></marker>
+    <marker id="arrow-o" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#f5a524"/></marker>
+    <marker id="arrow-p" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9d8cff"/></marker>
+    <marker id="arrow-c" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#38bdf8"/></marker>
+  </defs>
+</svg>
+<div id="flash"></div>
+<header id="top">
+  <div class="top-row">
+    <div class="brand"><small>ТЕОРИЯ · РИТМ · СЛУХ</small>ГИТАРНЫЙ <span>КРУГ</span></div>
+    <div class="grow"></div>
+    <span id="snd" class="note"></span>
+    <button id="stopAll" class="iconbtn stop" hidden aria-label="Остановить всё">■ <span id="stopName">стоп</span></button>
+    <button id="gear" class="iconbtn" aria-label="Настройки" aria-expanded="false">⚙</button>
+  </div>
+  <div class="sect" id="sections"></div>
+  <nav class="tabs" id="tabs" aria-label="Вкладки"></nav>
+  <div class="statusline" id="statusline"></div>
+  <div id="settings" hidden></div>
+</header>
+<main id="page"></main>
+<noscript>Для работы приложения нужен JavaScript.</noscript>
+<script type="module" src="js/main.js"></script>
 </body>
 </html>
