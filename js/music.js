@@ -317,11 +317,23 @@ export function progressionChords(tonicSp, modeId, prog) {
 // ---------- Аппликатуры ----------
 // off — смещения ладов от корня на корневой струне (null = струна не играет), индексы 0 = 6-я струна
 const SH = (name, rs, off) => ({ name, rs, off });
+// Трезвучие на 3 соседних струнах: inv — какая нота аккорда в басу (0 = корень, 1 = терция, 2 = квинта).
+// small: true — короткая форма; в автоподбор аппликатур (подложка, квинты, слух) не попадает, там нужен полный звук.
+const TRI_BASS = ['корень внизу', 'терция внизу', 'квинта внизу'];
+const TRI = (set, inv, rs, off) => ({ name: `3 стр. ${set} · ${TRI_BASS[inv]}`, rs, off, inv, small: true, set });
 export const SHAPES = {
   power: [SH('от 6-й струны', 0, [0, 2, null, null, null, null]), SH('от 6-й + октава', 0, [0, 2, 2, null, null, null]),
     SH('от 5-й струны', 1, [null, 0, 2, null, null, null]), SH('от 5-й + октава', 1, [null, 0, 2, 2, null, null])],
-  maj: [SH('E-форма, баррэ от 6-й', 0, [0, 2, 2, 1, 0, 0]), SH('A-форма, баррэ от 5-й', 1, [null, 0, 2, 2, 2, 0])],
-  min: [SH('Em-форма, баррэ от 6-й', 0, [0, 2, 2, 0, 0, 0]), SH('Am-форма, баррэ от 5-й', 1, [null, 0, 2, 2, 1, 0])],
+  maj: [SH('E-форма, баррэ от 6-й', 0, [0, 2, 2, 1, 0, 0]), SH('A-форма, баррэ от 5-й', 1, [null, 0, 2, 2, 2, 0]),
+    // струны 3-2-1 (G B E): C = 5-5-3, 9-8-8, 12-13-12
+    TRI('3-2-1', 0, 3, [null, null, null, 0, 0, -2]), TRI('3-2-1', 1, 5, [null, null, null, 1, 0, 0]), TRI('3-2-1', 2, 4, [null, null, null, -1, 0, -1]),
+    // струны 4-3-2 (D G B): C = 10-9-8, 2-0-1, 5-5-5
+    TRI('4-3-2', 0, 2, [null, null, 0, -1, -2, null]), TRI('4-3-2', 1, 4, [null, null, 1, -1, 0, null]), TRI('4-3-2', 2, 3, [null, null, 0, 0, 0, null])],
+  min: [SH('Em-форма, баррэ от 6-й', 0, [0, 2, 2, 0, 0, 0]), SH('Am-форма, баррэ от 5-й', 1, [null, 0, 2, 2, 1, 0]),
+    // струны 3-2-1: Cm = 5-4-3, 8-8-8, 12-13-11
+    TRI('3-2-1', 0, 3, [null, null, null, 0, -1, -2]), TRI('3-2-1', 1, 5, [null, null, null, 0, 0, 0]), TRI('3-2-1', 2, 4, [null, null, null, -1, 0, -2]),
+    // струны 4-3-2: Cm = 10-8-8, 1-0-1, 5-5-4
+    TRI('4-3-2', 0, 2, [null, null, 0, -2, -2, null]), TRI('4-3-2', 1, 4, [null, null, 0, -1, 0, null]), TRI('4-3-2', 2, 3, [null, null, 0, 0, -1, null])],
   sus4: [SH('Esus4-форма, от 6-й', 0, [0, 2, 2, 2, 0, 0]), SH('Asus4-форма, от 5-й', 1, [null, 0, 2, 2, 3, 0])],
   dim: [SH('от 6-й (4 струны)', 0, [0, 1, 2, 0, null, null]), SH('от 5-й (4 струны)', 1, [null, 0, 1, 2, 1, null])],
   aug: [SH('от 6-й (4 струны)', 0, [0, null, 2, 1, 1, null]), SH('от 5-й (4 струны)', 1, [null, 0, 3, 2, 2, null])],
@@ -362,6 +374,7 @@ export function bestVoicing(type, rootPc, tuningId, target = 5) {
   const tuning = TUNINGS[tuningId].midi;
   let best = null;
   for (const shape of shapesFor(type, tuningId)) {
+    if (shape.small) continue;
     const fr = placeShape(shape, rootPc, tuning, target);
     if (!fr) continue;
     const d = Math.abs(voicingAvg(fr) - target);
